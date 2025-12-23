@@ -6,32 +6,54 @@ import pandas as pd
 # 기본 설정
 # =========================
 st.set_page_config(
-    page_title="GRVT Multi-Account Manager",
+    page_title="GRVT GR1 ~ GR6 잔고 대시보드",
     layout="wide"
 )
 
 st.title("📊 GRVT GR1 ~ GR6 잔고 대시보드")
 
+AUTH_URL = "https://edge.grvt.io/auth/api_key/login"
+BALANCE_URL = "https://edge.grvt.io/api/account/balance"
+
 # =========================
-# GRVT API 함수
+# GRVT 인증
 # =========================
-def get_balance(api_key, api_secret):
-    """
-    GRVT 계정 잔고 조회
-    """
-    url = "https://api.grvt.io/v1/account/balance"
+def authenticate(api_key):
     headers = {
-        "X-API-KEY": api_key,
-        "X-API-SECRET": api_secret,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Cookie": "rm=true;"
+    }
+    payload = {
+        "api_key": api_key
     }
 
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        return {"error": str(e)}
+    r = requests.post(AUTH_URL, headers=headers, json=payload, timeout=10)
+
+    if r.status_code != 200:
+        return None, None, f"Auth failed: {r.text}"
+
+    cookie = r.headers.get("Set-Cookie")
+    account_id = r.headers.get("X-Grvt-Account-Id")
+
+    return cookie, account_id, None
+
+
+# =========================
+# 잔고 조회
+# =========================
+def get_balance(cookie, account_id):
+    headers = {
+        "Cookie": cookie,
+        "X-Grvt-Account-Id": account_id
+    }
+
+    r = requests.get(BALANCE_URL, headers=headers, timeout=10)
+
+    if r.status_code != 200:
+        return {"error": r.text}
+
+    return r.json()
+
 
 # =========================
 # 메인 UI
@@ -43,59 +65,61 @@ if st.button("모든 계정 잔고 조회"):
 
     for acc in ["GR1", "GR2", "GR3", "GR4", "GR5", "GR6"]:
         api_key = st.secrets[acc]["api_key"]
-        api_secret = st.secrets[acc]["api_secret"]
 
-        with st.spinner(f"{acc} 조회 중..."):
-            data = get_balance(api_key, api_secret)
+        with st.spinner(f"{acc} 인증 중..."):
+            cookie, account_id, err = authenticate(api_key)
 
-        # 에러 처리
+        if err:
+            rows.append({
+                "Account": acc,
+                "Status": "❌ 인증 실패",
+                "Equity": None,
+                "Available": None,
+                "Message": err
+            })
+            continue
+
+        data = get_balance(cookie, account_id)
+
         if "error" in data:
             rows.append({
                 "Account": acc,
-                "Status": "❌ 실패",
+                "Status": "❌ 조회 실패",
                 "Equity": None,
-                "Available Balance": None,
-                "Unrealized PnL": None,
+                "Available": None,
                 "Message": data["error"]
             })
             continue
 
-        # =========================
-        # 실제 GRVT 응답 기준 필드
-        # =========================
+        # 실제 GRVT balance 응답 필드 (full 기준)
         equity = data.get("equity")
         available = data.get("availableBalance")
-        unrealized_pnl = data.get("unrealizedPnl")
 
         rows.append({
             "Account": acc,
             "Status": "✅ 성공",
             "Equity": equity,
-            "Available Balance": available,
-            "Unrealized PnL": unrealized_pnl,
+            "Available": available,
             "Message": ""
         })
 
     df = pd.DataFrame(rows)
+    st.success("조회 완료")
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
-    st.success("✅ 조회 완료")
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True
-    )
 
 # =========================
-# 디버그 (필드 확인용)
+# 디버그
 # =========================
-with st.expander("🛠 API 응답 구조 확인 (디버그)"):
-    test_acc = st.selectbox(
-        "확인할 계정 선택",
-        ["GR1", "GR2", "GR3", "GR4", "GR5", "GR6"]
-    )
+with st.expander("🛠 선택 계정 원본 응답 보기"):
+    dbg_acc = st.selectbox("계정 선택", ["GR1", "GR2", "GR3", "GR4", "GR5", "GR6"])
 
-    if st.button("선택 계정 원본 응답 보기"):
-        api_key = st.secrets[test_acc]["api_key"]
-        api_secret = st.secrets[test_acc]["api_secret"]
-        raw = get_balance(api_key, api_secret)
-        st.json(raw)
+    if st.button("원본 API 응답 보기"):
+        api_key = st.secrets[dbg_acc]["api_key"]
+        cookie, account_id, err = authenticate(api_key)
+
+        if err:
+            st.error(err)
+        else:
+            raw = get_balance(cookie, account_id)
+            st.json(raw)
